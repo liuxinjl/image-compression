@@ -1,0 +1,17 @@
+identity:
+  author: liuxin
+  name: image_compression
+  label:
+    en_US: Image Compression
+    zh_Hans: 图片压缩
+    pt_BR: Image Compression
+  description:
+    en_US: An image compression tool that helps you effectively reduce image file size while maintaining acceptable image quality.
+    zh_Hans: 图像压缩工具，可以帮助您有效减小图片文件大小，同时保持可接受的图像质量。
+    pt_BR: An image compression tool that helps you effectively reduce image file size while maintaining acceptable image quality.
+  icon: icon.svg
+tools:
+  - tools/image-compression.yaml
+extra:
+  python:
+    source: provider/image-compression.py
