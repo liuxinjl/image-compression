@@ -23,3 +23,26 @@ The tool solves the URL exception issue currently encountered in the Dify system
 - **批量压缩**：支持多张图片同时处理
 - **支持多种格式**：兼容JPG、PNG等常见图片格式
 - **自定义参数**：可通过尺寸参数配置，调整压缩质量。
+
+### Changelog
+
+#### v0.0.2 
+
+##### Added
+- Introduced a method for intelligently calculating compression quality
+- Added logic to compare original and compressed image sizes to avoid cases where compression increases file size
+##### Fixed
+- Fixed “unknown file extension” error when processing specific formats such as PNG
+- Resolved the issue where small images became larger after compression
+
+
+#### v0.0.1
+
+##### Added
+
+- Initial version release
+- Implemented basic image compression - tionality
+- Supported common image formats including -  PNG, GIF, WEBP, and BMP
+- Provided adjustable quality parameters
+- Enabled integration and API access via the -  platform
+- Basic error handling mechanism
