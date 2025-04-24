@@ -107,34 +107,68 @@ class ImageCompressionTool(Tool):
         # 准备输出缓冲区
         output = io.BytesIO()
         
-        # 保留透明度
-        if img.mode == 'RGBA':
-            # 保留透明度通道
-            pass  # RGBA模式保持不变
-        elif img.mode != 'RGB':
-            img = img.convert('RGB')
+        # 保存原始尺寸，用于判断是否需要缩小
+        orig_width, orig_height = img.size
+        has_alpha = img.mode == 'RGBA'
         
         # 对于大尺寸PNG，尝试减小尺寸
-        orig_width, orig_height = img.size
-        # 如果图像非常大，考虑减小它的尺寸
-        max_dimension = 1920  # 根据需要调整
+        max_dimension = 1500  # 降低为1500以获得更好的压缩率
         if max(orig_width, orig_height) > max_dimension:
             ratio = max_dimension / max(orig_width, orig_height)
             new_width = int(orig_width * ratio)
             new_height = int(orig_height * ratio)
             img = img.resize((new_width, new_height), Image.LANCZOS)
         
-        # 保存PNG时使用最佳压缩等级和优化
-        img.save(output, 
+        # 针对不同类型的PNG使用不同策略
+        if has_alpha:
+            # 有透明通道的PNG保留RGBA模式
+            # 但可以尝试减少颜色数量，对于质量较低的要求，可以量化颜色
+            if quality < 50:
+                # 减少调色板颜色数量来显著降低文件大小
+                # 使用Floyd-Steinberg抖动算法，保持视觉效果
+                img = img.convert('RGBA').quantize(colors=256, method=2, kmeans=1, dither=Image.FLOYDSTEINBERG)
+                img = img.convert('RGBA')  # 量化后转回RGBA以保留透明度
+        else:
+            # 无透明通道的PNG可以考虑转为RGB并量化颜色
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # 对于低质量需求，进行颜色量化
+            if quality < 60:
+                colors = 256 if quality > 30 else 128
+                img = img.quantize(colors=colors, method=2, kmeans=1, dither=Image.FLOYDSTEINBERG)
+                img = img.convert('RGB')  # 转回RGB模式以保持兼容性
+        
+        # 尝试用不同参数保存并选择最小的结果
+        attempts = []
+        
+        # 第一种尝试: 标准优化PNG
+        standard_output = io.BytesIO()
+        img.save(standard_output, 
                 format='PNG', 
                 optimize=True,
                 compress_level=compress_level)
-        output.seek(0)
+        attempts.append(standard_output.getvalue())
+        
+        # 第二种尝试: 降低位深度（如果质量要求低）
+        if quality < 50:
+            reduced_output = io.BytesIO()
+            if not has_alpha:  # 无透明通道时可以使用P模式
+                try:
+                    # 减少到256色会显著降低文件大小
+                    img_p = img.convert('P', palette=Image.ADAPTIVE, colors=256)
+                    img_p.save(reduced_output, format='PNG', optimize=True, compress_level=compress_level)
+                    attempts.append(reduced_output.getvalue())
+                except Exception:
+                    pass
+        
+        # 选择最小的输出
+        best_result = min(attempts, key=len)
         
         return {
-            "file": output.read(),
+            "file": best_result,
             "format": "PNG",
-            "size": len(output.getvalue()),
+            "size": len(best_result),
             "filename": filename
         }
 
@@ -167,26 +201,35 @@ class ImageCompressionTool(Tool):
             if not img_format:
                 img_format = 'JPEG'
             
-            # PNG格式特殊处理：尝试更激进的压缩策略
-            if img_format.upper() == 'PNG' and len(image_file) > target_size_bytes * 1.5:
-                # 先尝试常规压缩
-                result = self.compress_image(image_file, quality=10)  # 对PNG使用最高压缩级别
+            # PNG格式特殊处理：多级压缩尝试
+            if img_format.upper() == 'PNG':
+                # 第一级尝试：最高压缩级别的PNG
+                result = self.compress_image(image_file, quality=5)
                 
-                # 如果还是太大，尝试转换为JPEG (只有当原图无透明通道时)
+                # 如果还是太大，尝试第二级压缩（更激进的量化）
+                if result.get("size") > target_size_bytes * 1.2:
+                    try:
+                        # 尝试更激进的压缩设置
+                        secondary_result = self.compress_image(image_file, quality=1)
+                        if secondary_result.get("size") < result.get("size"):
+                            result = secondary_result
+                    except Exception:
+                        pass  # 如果失败，继续使用之前的结果
+                
+                # 第三级尝试：对于无透明通道的PNG，考虑转换为JPEG
                 if result.get("size") > target_size_bytes and img.mode != "RGBA":
                     try:
-                        # 将PNG转换为JPEG可能得到更小的文件
                         output = io.BytesIO()
-                        if img.mode != "RGB":
-                            img = img.convert("RGB")
+                        img_rgb = img.convert("RGB")
                         
-                        # 用较低质量保存为JPEG
-                        img.save(output, format="JPEG", quality=70)
+                        # 用适中质量保存为JPEG
+                        jpeg_quality = min(70, int(70 * target_size_bytes / result.get("size")))
+                        img_rgb.save(output, format="JPEG", quality=max(jpeg_quality, 40))
                         output.seek(0)
                         
                         jpeg_size = len(output.getvalue())
                         # 只有当JPEG显著小于PNG时才使用JPEG
-                        if jpeg_size < result.get("size") * 0.7:
+                        if jpeg_size < result.get("size") * 0.8:
                             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             unique_id = str(uuid.uuid4())[:8]
                             return {
@@ -197,6 +240,7 @@ class ImageCompressionTool(Tool):
                             }
                     except Exception:
                         pass  # 如果转换失败，继续使用PNG结果
+                
                 return result
         
         # 初始质量设置
@@ -317,3 +361,4 @@ class ImageCompressionTool(Tool):
                     "size": compressed_img.get("size"),
                 }
                 yield self.create_blob_message(compressed_img.get("file"), meta)
+
