@@ -52,13 +52,6 @@ class ImageCompressionTool(Tool):
             with Image.open(io.BytesIO(image_file)) as img:
                 print("Image compression started")
 
-                # 转换为 RGB 模式（如果不是）
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-
-                # 创建字节流缓冲区
-                output = io.BytesIO()
-
                 # 获取图片格式，如果没有格式则默认为JPEG
                 img_format = getattr(img, 'format', 'JPEG')
                 if not img_format:
@@ -69,17 +62,81 @@ class ImageCompressionTool(Tool):
                 unique_id = str(uuid.uuid4())[:8]  # 使用UUID前8位以保持文件名简短
                 filename = f"compressed_{timestamp}_{unique_id}.{img_format.lower()}"
                 
-                # 保存压缩后的图片到缓冲区
-                img.save(output, format=img_format, quality=quality)
-                output.seek(0)
-                return {
-                    "file": output.read(),
-                    "format": img_format,
-                    "size": len(output.getvalue()),
-                    "filename": filename
-                }
+                # 创建字节流缓冲区
+                output = io.BytesIO()
+                
+                # 根据不同的图片格式采用不同的压缩策略
+                if img_format.upper() == 'PNG':
+                    # PNG格式特殊处理
+                    return self.compress_png(img, quality, filename)
+                else:
+                    # 非PNG格式处理（如JPEG）
+                    # 转换为 RGB 模式（如果不是）
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    
+                    # 保存压缩后的图片到缓冲区
+                    img.save(output, format=img_format, quality=quality)
+                    output.seek(0)
+                    
+                    return {
+                        "file": output.read(),
+                        "format": img_format,
+                        "size": len(output.getvalue()),
+                        "filename": filename
+                    }
         except Exception as e:
             raise ValueError(f"Image compression failed: {str(e)}")
+
+    def compress_png(self, img, quality: int, filename: str) -> dict[str, str | int | bytes]:
+        """
+        专门处理PNG图片的压缩
+        
+        :param img: PIL Image对象
+        :param quality: 压缩质量参数
+        :param filename: 输出文件名
+        :return: 压缩后的图片信息字典
+        """
+        # PNG的质量参数实际上是压缩级别(0-9)
+        # 将1-100的质量值映射到0-9的压缩级别
+        if quality <= 10:
+            compress_level = 9  # 最高压缩率
+        else:
+            compress_level = 9 - min(9, int(quality / 10))
+        
+        # 准备输出缓冲区
+        output = io.BytesIO()
+        
+        # 保留透明度
+        if img.mode == 'RGBA':
+            # 保留透明度通道
+            pass  # RGBA模式保持不变
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # 对于大尺寸PNG，尝试减小尺寸
+        orig_width, orig_height = img.size
+        # 如果图像非常大，考虑减小它的尺寸
+        max_dimension = 1920  # 根据需要调整
+        if max(orig_width, orig_height) > max_dimension:
+            ratio = max_dimension / max(orig_width, orig_height)
+            new_width = int(orig_width * ratio)
+            new_height = int(orig_height * ratio)
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+        
+        # 保存PNG时使用最佳压缩等级和优化
+        img.save(output, 
+                format='PNG', 
+                optimize=True,
+                compress_level=compress_level)
+        output.seek(0)
+        
+        return {
+            "file": output.read(),
+            "format": "PNG",
+            "size": len(output.getvalue()),
+            "filename": filename
+        }
 
     def iterative_compress_image(self, image_file: bytes, target_size_bytes: int, 
                               initial_quality: int = 85, max_iterations: int = 5) -> dict[str, str | int | bytes]:
@@ -109,6 +166,38 @@ class ImageCompressionTool(Tool):
             img_format = getattr(img, 'format', 'JPEG')
             if not img_format:
                 img_format = 'JPEG'
+            
+            # PNG格式特殊处理：尝试更激进的压缩策略
+            if img_format.upper() == 'PNG' and len(image_file) > target_size_bytes * 1.5:
+                # 先尝试常规压缩
+                result = self.compress_image(image_file, quality=10)  # 对PNG使用最高压缩级别
+                
+                # 如果还是太大，尝试转换为JPEG (只有当原图无透明通道时)
+                if result.get("size") > target_size_bytes and img.mode != "RGBA":
+                    try:
+                        # 将PNG转换为JPEG可能得到更小的文件
+                        output = io.BytesIO()
+                        if img.mode != "RGB":
+                            img = img.convert("RGB")
+                        
+                        # 用较低质量保存为JPEG
+                        img.save(output, format="JPEG", quality=70)
+                        output.seek(0)
+                        
+                        jpeg_size = len(output.getvalue())
+                        # 只有当JPEG显著小于PNG时才使用JPEG
+                        if jpeg_size < result.get("size") * 0.7:
+                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            unique_id = str(uuid.uuid4())[:8]
+                            return {
+                                "file": output.getvalue(),
+                                "format": "JPEG",
+                                "size": jpeg_size,
+                                "filename": f"compressed_{timestamp}_{unique_id}.jpg"
+                            }
+                    except Exception:
+                        pass  # 如果转换失败，继续使用PNG结果
+                return result
         
         # 初始质量设置
         quality = initial_quality
@@ -228,6 +317,3 @@ class ImageCompressionTool(Tool):
                     "size": compressed_img.get("size"),
                 }
                 yield self.create_blob_message(compressed_img.get("file"), meta)
-
-
-

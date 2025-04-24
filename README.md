@@ -1,7 +1,7 @@
 ## Image Compression Tool 图像压缩工具
 
 **Author:** [liuxin](https://github.com/liuxinjl)
-**Version:** 0.0.1
+**Version:** 0.0.2
 **Type:** tool
 
 ### Description
